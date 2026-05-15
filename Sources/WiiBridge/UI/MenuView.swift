@@ -10,7 +10,8 @@ struct Profile: Identifiable, Hashable {
 struct MenuView: View {
     @State private var isScanning = false
     @State private var foundDevices: [IOBluetoothDevice] = []
-    @State private var connectedDevices: [String] = []
+    @State private var connectedDevices: [IOBluetoothDevice] = []
+    @State private var batteryLevels: [String: Double] = [:]
     @State private var selectedProfile: Profile = Profile(name: "Standard", description: "Default Wii Layout")
     
     let profiles = [
@@ -58,10 +59,17 @@ struct MenuView: View {
                     .font(.caption)
                     .foregroundColor(.secondary)
                 
-                ForEach(connectedDevices, id: \.self) { name in
+                ForEach(connectedDevices, id: \.addressString) { device in
                     HStack {
                         Image(systemName: "gamecontroller.fill")
-                        Text(name)
+                        VStack(alignment: .leading) {
+                            Text(device.name ?? "Wii Remote")
+                            if let battery = batteryLevels[device.addressString] {
+                                Text("\(Int(battery * 100))%")
+                                    .font(.caption2)
+                                    .foregroundColor(.secondary)
+                            }
+                        }
                         Spacer()
                         Text("Connected").font(.caption).foregroundColor(.green)
                     }
@@ -95,22 +103,31 @@ struct MenuView: View {
     func toggleScanning() {
         isScanning.toggle()
         if isScanning {
-            BluetoothManager.shared.onDeviceFound = { device in
-                if !foundDevices.contains(where: { $0.addressString == device.addressString }) {
-                    foundDevices.append(device)
+            Task {
+                for await device in BluetoothManager.shared.scan() {
+                    if !foundDevices.contains(where: { $0.addressString == device.addressString }) {
+                        foundDevices.append(device)
+                    }
                 }
             }
-            BluetoothManager.shared.startScanning()
         } else {
             BluetoothManager.shared.stopScanning()
         }
     }
     
     func pairDevice(_ device: IOBluetoothDevice) {
-        BluetoothManager.shared.connect(device: device)
-        if let name = device.name {
-            connectedDevices.append(name)
-            foundDevices.removeAll(where: { $0.addressString == device.addressString })
+        Task {
+            do {
+                let connection = try await BluetoothManager.shared.connect(device: device)
+                connectedDevices.append(device)
+                foundDevices.removeAll(where: { $0.addressString == device.addressString })
+
+                connection.wiiDevice.addObserver { state in
+                    batteryLevels[device.addressString] = state.batteryLevel
+                }
+            } catch {
+                print("Failed to pair: \(error)")
+            }
         }
     }
 }
