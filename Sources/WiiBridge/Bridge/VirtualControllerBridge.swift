@@ -31,7 +31,7 @@ class VirtualControllerBridge {
         let id = ObjectIdentifier(wiiDevice)
         controllers[id] = virtualController
         
-        wiiDevice.onUpdate = { [weak self] state in
+        wiiDevice.addObserver { [weak self] state in
             self?.update(id: id, with: state)
         }
     }
@@ -61,5 +61,18 @@ class VirtualControllerBridge {
         
         virtualController.setValue(wiiState.buttonHome ? 1.0 : 0.0, forButtonElement: GCInputButtonMenu)
         virtualController.setValue(wiiState.buttonPlus ? 1.0 : 0.0, forButtonElement: GCInputButtonOptions)
+
+        // Motion
+        if let motion = virtualController.controller?.motion {
+            // We map normalized 0..1 to -1..1 range for gravity/acceleration
+            let gx = (wiiState.accelX * 2.0) - 1.0
+            let gy = (wiiState.accelY * 2.0) - 1.0
+            let gz = (wiiState.accelZ * 2.0) - 1.0
+
+            // This is a simplification; a real implementation would use GCMotion's internal gravity/userAcceleration
+            // For GCVirtualController, we may need to inject motion data if supported via internal APIs or use it for specific mappings.
+            // Since GCVirtualController doesn't have direct 'setGravity', this serves as a placeholder for where that logic resides.
+            // Some developers map tilt to stick values if motion isn't directly settable.
+        }
     }
 }

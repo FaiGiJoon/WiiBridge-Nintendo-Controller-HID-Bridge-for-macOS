@@ -1,6 +1,7 @@
 import Foundation
 import IOBluetooth
 
+@MainActor
 class BluetoothManager: NSObject, IOBluetoothDeviceInquiryDelegate, IOBluetoothDevicePairDelegate {
     static let shared = BluetoothManager()
     
@@ -8,33 +9,57 @@ class BluetoothManager: NSObject, IOBluetoothDeviceInquiryDelegate, IOBluetoothD
     private var devices: [IOBluetoothDevice] = []
     private var activeConnections: [String: WiiConnection] = [:]
     
-    var onDeviceFound: ((IOBluetoothDevice) -> Void)?
+    private var deviceFoundContinuation: AsyncStream<IOBluetoothDevice>.Continuation?
     
-    func startScanning() {
-        inquiry = IOBluetoothDeviceInquiry(delegate: self)
-        inquiry?.start()
-    }
-    
-    func stopScanning() {
-        inquiry?.stop()
-    }
-    
-    func deviceInquiryDeviceFound(_ inquiry: IOBluetoothDeviceInquiry!, device: IOBluetoothDevice!) {
-        guard let name = device.name else { return }
-        if name.contains("Nintendo") || name.contains("RVL") {
-            DispatchQueue.main.async {
-                if !self.devices.contains(where: { $0.addressString == device.addressString }) {
-                    self.devices.append(device)
-                    self.onDeviceFound?(device)
+    func scan() -> AsyncStream<IOBluetoothDevice> {
+        AsyncStream { continuation in
+            self.deviceFoundContinuation = continuation
+            inquiry = IOBluetoothDeviceInquiry(delegate: self)
+            inquiry?.start()
+
+            continuation.onTermination = { @Sendable _ in
+                Task { @MainActor in
+                    self.stopScanning()
                 }
             }
         }
     }
     
-    func connect(device: IOBluetoothDevice) {
-        let pair = IOBluetoothDevicePair(device: device)
-        pair?.delegate = self
-        pair?.start()
+    func stopScanning() {
+        inquiry?.stop()
+        inquiry = nil
+        deviceFoundContinuation?.finish()
+        deviceFoundContinuation = nil
+    }
+    
+    func deviceInquiryDeviceFound(_ inquiry: IOBluetoothDeviceInquiry!, device: IOBluetoothDevice!) {
+        guard let name = device.name else { return }
+        if name.contains("Nintendo") || name.contains("RVL") {
+            if !self.devices.contains(where: { $0.addressString == device.addressString }) {
+                self.devices.append(device)
+                self.deviceFoundContinuation?.yield(device)
+            }
+        }
+    }
+    
+    private var pairingContinuation: CheckedContinuation<Void, Error>?
+
+    func connect(device: IOBluetoothDevice) async throws -> WiiConnection {
+        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
+            self.pairingContinuation = continuation
+            let pair = IOBluetoothDevicePair(device: device)
+            pair?.delegate = self
+            let status = pair?.start() ?? kIOReturnError
+            if status != kIOReturnSuccess {
+                continuation.resume(throwing: NSError(domain: NSOSStatusErrorDomain, code: Int(status)))
+                self.pairingContinuation = nil
+            }
+        }
+
+        let connection = WiiConnection(device: device)
+        self.activeConnections[device.addressString] = connection
+        try await connection.connect()
+        return connection
     }
     
     // MARK: - IOBluetoothDevicePairDelegate
@@ -44,27 +69,23 @@ class BluetoothManager: NSObject, IOBluetoothDeviceInquiryDelegate, IOBluetoothD
               let device = pair.device() else { return }
         
         let pinData = calculatePIN(device: device, type: .syncButton)
-        let pinCode = BluetoothPINCode(data: (
-            pinData[0], pinData[1], pinData[2], pinData[3], pinData[4], pinData[5],
-            0, 0, 0, 0, 0, 0, 0, 0, 0, 0
-        ))
+        var pinCode = BluetoothPINCode()
+        pinData.withUnsafeBytes { ptr in
+            if let baseAddress = ptr.baseAddress {
+                memcpy(&pinCode, baseAddress, pinData.count)
+            }
+        }
         
         pair.replyPINCode(UInt8(pinData.count), pinCode: pinCode)
     }
     
     func devicePairingFinished(_ sender: Any!, error: IOReturn) {
-        guard error == kIOReturnSuccess,
-              let pair = sender as? IOBluetoothDevicePair,
-              let device = pair.device() else {
-            print("Pairing failed with error: \(error)")
-            return
+        if error == kIOReturnSuccess {
+            pairingContinuation?.resume()
+        } else {
+            pairingContinuation?.resume(throwing: NSError(domain: NSOSStatusErrorDomain, code: Int(error)))
         }
-        
-        DispatchQueue.global(qos: .userInitiated).async {
-            let connection = WiiConnection(device: device)
-            self.activeConnections[device.addressString] = connection
-            connection.connect()
-        }
+        pairingContinuation = nil
     }
     
     func calculatePIN(device: IOBluetoothDevice, type: PINType) -> Data {
