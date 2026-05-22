@@ -2,12 +2,12 @@ import Foundation
 import IOBluetooth
 
 @MainActor
-class BluetoothManager: NSObject, IOBluetoothDeviceInquiryDelegate, IOBluetoothDevicePairDelegate {
+class BluetoothManager: NSObject, ObservableObject, IOBluetoothDeviceInquiryDelegate, IOBluetoothDevicePairDelegate {
     static let shared = BluetoothManager()
     
     private var inquiry: IOBluetoothDeviceInquiry?
     private var devices: [IOBluetoothDevice] = []
-    private var activeConnections: [String: WiiConnection] = [:]
+    @Published var activeConnections: [String: WiiConnection] = [:]
     
     private var deviceFoundContinuation: AsyncStream<IOBluetoothDevice>.Continuation?
     
@@ -43,6 +43,10 @@ class BluetoothManager: NSObject, IOBluetoothDeviceInquiryDelegate, IOBluetoothD
     }
     
     private var pairingContinuation: CheckedContinuation<Void, Error>?
+
+    func connection(for device: IOBluetoothDevice) -> WiiConnection? {
+        return activeConnections[device.addressString]
+    }
 
     func connect(device: IOBluetoothDevice) async throws -> WiiConnection {
         try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in

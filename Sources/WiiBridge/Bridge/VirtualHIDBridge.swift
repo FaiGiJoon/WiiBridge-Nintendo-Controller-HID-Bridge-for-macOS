@@ -47,7 +47,7 @@ class VirtualHIDBridge {
         let id = ObjectIdentifier(wiiDevice)
         devices[id] = userDevice
         
-        wiiDevice.onUpdate = { [weak self] state in
+        wiiDevice.addObserver { [weak self] state in
             self?.sendUpdate(id: id, state: state)
         }
     }

@@ -92,6 +92,10 @@ struct MenuView: View {
             
             Divider()
             
+            Button("Open Main Dashboard") {
+                (NSApplication.shared.delegate as? AppDelegate)?.openMainWindow()
+            }
+
             Button("Quit Wii Bridge") {
                 NSApplication.shared.terminate(nil)
             }
