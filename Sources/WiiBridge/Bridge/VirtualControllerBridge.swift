@@ -51,12 +51,25 @@ class VirtualControllerBridge {
         virtualController.setPosition(CGPoint(x: dpadX, y: dpadY), forDirectionPadElement: GCInputDirectionPad)
         
         // Analog Sticks
-        let lx = CGFloat((wiiState.lStickX * 2.0) - 1.0)
-        let ly = CGFloat((wiiState.lStickY * 2.0) - 1.0)
-        virtualController.setPosition(CGPoint(x: lx, y: ly), forDirectionPadElement: GCInputLeftThumbstick)
+        var lx = CGFloat((wiiState.lStickX * 2.0) - 1.0)
+        var ly = CGFloat((wiiState.lStickY * 2.0) - 1.0)
+
+        var rx = CGFloat((wiiState.rStickX * 2.0) - 1.0)
+        var ry = CGFloat((wiiState.rStickY * 2.0) - 1.0)
         
-        let rx = CGFloat((wiiState.rStickX * 2.0) - 1.0)
-        let ry = CGFloat((wiiState.rStickY * 2.0) - 1.0)
+        // If it's a uDraw tablet, map the stylus position to the sticks if desired,
+        // or just rely on the specialized uDraw support in Dolphin which might expect specific HID reports.
+        // For broad compatibility, we map uDraw to Left Stick.
+        if wiiState.uDrawX < 1.0 && wiiState.uDrawY < 1.0 {
+            lx = CGFloat((wiiState.uDrawX * 2.0) - 1.0)
+            ly = CGFloat((wiiState.uDrawY * 2.0) - 1.0)
+
+            // Map upper button to X, lower to Y
+            virtualController.setValue(wiiState.uDrawButtonUpper ? 1.0 : 0.0, forButtonElement: GCInputButtonX)
+            virtualController.setValue(wiiState.uDrawButtonLower ? 1.0 : 0.0, forButtonElement: GCInputButtonY)
+        }
+
+        virtualController.setPosition(CGPoint(x: lx, y: ly), forDirectionPadElement: GCInputLeftThumbstick)
         virtualController.setPosition(CGPoint(x: rx, y: ry), forDirectionPadElement: GCInputRightThumbstick)
         
         virtualController.setValue(wiiState.buttonHome ? 1.0 : 0.0, forButtonElement: GCInputButtonMenu)

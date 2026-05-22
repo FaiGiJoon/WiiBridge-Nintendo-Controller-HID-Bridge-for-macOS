@@ -24,6 +24,13 @@ struct WiiState {
 
     var hasExtension = false
 
+    // uDraw specific
+    var uDrawX: Double = 1.0 // Normalized 0..1, 1.0 means stylus away
+    var uDrawY: Double = 1.0
+    var uDrawPressure: Double = 0.0
+    var uDrawButtonLower = false
+    var uDrawButtonUpper = false
+
     var batteryLevel: Double = 0.0
     var isRumbling = false
 }
@@ -42,25 +49,46 @@ class WiiDevice {
         case wiiRemote
         case wiiUPro
         case nunchuk
+        case uDraw
     }
     var type: ControllerType = .wiiRemote
     
     func initialize() {
-        // 1. Initialize extension (Wii U Pro / Nunchuk)
-        // Write 0x55 to 0x04A40040
-        writeRegister(address: 0x04A40040, data: Data([0x55]))
+        // 1. Initialize extension using the "New Way"
+        // Write 0x55 to 0x04A400F0
+        writeRegister(address: 0x04A400F0, data: Data([0x55]))
         // Write 0x00 to 0x04A400FB
         writeRegister(address: 0x04A400FB, data: Data([0x00]))
         
         // 2. Set reporting mode to include extension data and accelerometer (0x35)
-        // 0x35: Core Buttons + Accelerometer + 16 Extension Bytes
         setReportingMode(0x35)
         
         // 3. Set LED 1
         setLED(1)
 
-        // 4. Request status to get initial battery level
+        // 4. Request status to get initial battery level and extension status
         requestStatus()
+
+        // 5. Read extension ID
+        readRegister(address: 0x04A400FA, length: 6) { [weak self] data in
+            self?.identifyExtension(data: data)
+        }
+    }
+
+    private func identifyExtension(data: Data) {
+        guard data.count >= 6 else { return }
+
+        // uDraw ID: FF 00 A4 20 01 12
+        if data[0] == 0xFF && data[1] == 0x00 && data[4] == 0x01 && data[5] == 0x12 {
+            self.type = .uDraw
+            print("Detected uDraw GameTablet")
+        } else if data[4] == 0x00 && data[5] == 0x00 {
+            self.type = .nunchuk
+            print("Detected Nunchuk")
+        } else if data[4] == 0x01 && data[5] == 0x01 {
+            self.type = .wiiUPro // Or Classic Controller
+            print("Detected Wii U Pro / Classic Controller")
+        }
     }
 
     func setReportingMode(_ mode: UInt8) {
@@ -94,16 +122,32 @@ class WiiDevice {
         connection?.send(data: data)
     }
     
+    private var pendingReadCallbacks: [UInt32: (Data) -> Void] = [:]
+
     private func writeRegister(address: UInt32, data: Data) {
         var report = Data([0x16]) // Write Register Report
         let addrBytes = withUnsafeBytes(of: address.bigEndian) { Data($0) }
         report.append(addrBytes.subdata(in: 1..<4)) // 3-byte address
         report.append(UInt8(data.count))
         report.append(data)
-        // Pad to 16 bytes payload (Report 0x16 is 22 bytes total including ID)
+        // Pad to 22 bytes total
         while report.count < 22 {
             report.append(0x00)
         }
+        connection?.send(data: report)
+    }
+
+    private func readRegister(address: UInt32, length: UInt8, completion: @escaping (Data) -> Void) {
+        pendingReadCallbacks[address & 0xFFFF] = completion
+        var report = Data([0x17]) // Read Register Report
+        let addrBytes = withUnsafeBytes(of: address.bigEndian) { Data($0) }
+        report.append(addrBytes.subdata(in: 1..<4)) // 3-byte address
+
+        let lenHigh = UInt8((length >> 8) & 0xFF)
+        let lenLow = UInt8(length & 0xFF)
+        report.append(lenHigh)
+        report.append(lenLow)
+
         connection?.send(data: report)
     }
     
@@ -134,35 +178,56 @@ class WiiDevice {
             let batteryRaw = data[6]
             state.batteryLevel = Double(batteryRaw) / 200.0 // 0xC8 (200) is max
             state.hasExtension = (data[3] & 0x02) != 0
+        } else if reportId == 0x21 && data.count >= 21 {
+            // Read Memory and Registers Response
+            let address = (UInt32(data[4]) << 8) | UInt32(data[5])
+            let payload = data.subdata(in: 6..<data.count)
+            if let callback = pendingReadCallbacks.removeValue(forKey: address) {
+                callback(payload)
+            }
         } else if reportId == 0x35 && data.count >= 21 {
-            // 0x35: BB AA EE EE EE EE EE EE EE EE EE EE EE EE EE EE EE EE
-            // AA are accel bytes
-            let a1 = data[3]
-            let a2 = data[4]
-            let a3 = data[5]
-
-            // Accel data is 10-bit.
-            // X: bits 2-9 of byte 3, bits 1-2 of byte 1 (LSB)
-            // Y: bits 2-9 of byte 4, bit 5 of byte 2 (LSB)
-            // Z: bits 2-9 of byte 5, bit 6 of byte 2 (LSB)
-            // For simplicity, we use the 8-bit MSB here.
-            state.accelX = Double(a1) / 255.0
-            state.accelY = Double(a2) / 255.0
-            state.accelZ = Double(a3) / 255.0
+            state.accelX = Double(data[3]) / 255.0
+            state.accelY = Double(data[4]) / 255.0
+            state.accelZ = Double(data[5]) / 255.0
 
             let ext = data.subdata(in: 6..<min(data.count, 21))
-            if ext.count >= 10 {
-                state.lStickX = Double(ext[0]) / 255.0
-                state.lStickY = Double(ext[1]) / 255.0
-                state.rStickX = Double(ext[2]) / 255.0
-                state.rStickY = Double(ext[3]) / 255.0
-                state.hasExtension = true
-            }
+            parseExtension(ext)
         }
         
         DispatchQueue.main.async {
             for observer in self.observers {
                 observer(self.state)
+            }
+        }
+    }
+
+    private func parseExtension(_ data: Data) {
+        guard data.count >= 6 else { return }
+        state.hasExtension = true
+
+        switch type {
+        case .uDraw:
+            let xRaw = UInt16(data[0]) | (UInt16(data[2] & 0x0F) << 8)
+            let yRaw = UInt16(data[1]) | (UInt16(data[2] & 0xF0) << 4)
+            let pRaw = UInt16(data[3]) | (UInt16(data[5] & 0x04) << 6)
+
+            state.uDrawX = Double(xRaw) / 4095.0
+            state.uDrawY = Double(yRaw) / 4095.0
+            state.uDrawPressure = Double(pRaw) / 511.0
+
+            state.uDrawButtonLower = (data[5] & 0x02) == 0
+            state.uDrawButtonUpper = (data[5] & 0x01) == 0
+
+        case .nunchuk:
+            state.lStickX = Double(data[0]) / 255.0
+            state.lStickY = Double(data[1]) / 255.0
+
+        case .wiiUPro, .wiiRemote:
+            if data.count >= 10 {
+                state.lStickX = Double(data[0]) / 255.0
+                state.lStickY = Double(data[1]) / 255.0
+                state.rStickX = Double(data[2]) / 255.0
+                state.rStickY = Double(data[3]) / 255.0
             }
         }
     }
