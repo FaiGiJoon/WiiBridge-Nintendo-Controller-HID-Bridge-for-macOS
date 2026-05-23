@@ -1,5 +1,6 @@
 import SwiftUI
 
+#if os(macOS)
 @main
 struct WiiBridgeApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) var appDelegate
@@ -19,10 +20,12 @@ struct WiiBridgeApp: App {
 }
 
 class AppDelegate: NSObject, NSApplicationDelegate {
+    static var shared: AppDelegate?
     var statusItem: NSStatusItem?
     var popover: NSPopover?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        AppDelegate.shared = self
         let menuView = MenuView()
         
         let popover = NSPopover()
@@ -39,10 +42,6 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     @objc func togglePopover(_ sender: AnyObject?) {
-        if let event = NSApplication.shared.currentEvent, event.type == .rightMouseUp {
-            // Right click could open main window?
-        }
-
         if let button = statusItem?.button {
             if popover?.isShown == true {
                 popover?.performClose(sender)
@@ -54,10 +53,9 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
     @objc func openMainWindow() {
         NSApp.activate(ignoringOtherApps: true)
-        // In SwiftUI 3+, we usually use openWindow environment variable,
-        // but from AppDelegate we can use this trick:
         if let window = NSApplication.shared.windows.first(where: { $0.identifier?.rawValue == "main" }) {
             window.makeKeyAndOrderFront(nil)
         }
     }
 }
+#endif

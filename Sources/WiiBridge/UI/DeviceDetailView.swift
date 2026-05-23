@@ -15,6 +15,8 @@ struct DeviceDetailView: View {
 
                 if controllerType == .uDraw {
                     uDrawVisualizer
+                } else if controllerType == .nunchuk {
+                    nunchukVisualizer
                 } else {
                     standardVisualizer
                 }
@@ -28,7 +30,7 @@ struct DeviceDetailView: View {
         .onAppear {
             setupObservation()
         }
-        .id(device.addressString) // Ensure view refreshes when switching devices
+        .id(device.addressString)
     }
 
     var headerSection: some View {
@@ -91,6 +93,31 @@ struct DeviceDetailView: View {
                 Spacer()
                 Text("Pressure: \(Int(wiiState.uDrawPressure * 100))%")
             }
+        }
+    }
+
+    var nunchukVisualizer: some View {
+        VStack(alignment: .leading) {
+            Text("Nunchuk Inputs")
+                .font(.headline)
+
+            HStack {
+                IndicatorView(label: "C", active: wiiState.nunchukButtonC)
+                IndicatorView(label: "Z", active: wiiState.nunchukButtonZ)
+
+                Spacer()
+
+                VStack {
+                    Text("Stick").font(.caption)
+                    ZStack {
+                        Circle().stroke(Color.secondary, lineWidth: 1).frame(width: 40, height: 40)
+                        Circle().fill(Color.accentColor).frame(width: 8, height: 8)
+                            .offset(x: CGFloat((wiiState.lStickX - 0.5) * 30), y: CGFloat((wiiState.lStickY - 0.5) * 30))
+                    }
+                }
+            }
+
+            standardVisualizer
         }
     }
 
