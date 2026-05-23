@@ -35,10 +35,12 @@ struct WiiState {
     var isRumbling = false
 }
 
+@MainActor
 class WiiDevice {
     weak var connection: WiiConnection?
     var state = WiiState()
     private var observers: [(WiiState) -> Void] = []
+    var virtualController: VirtualControllerProvider?
 
     func addObserver(_ observer: @escaping (WiiState) -> Void) {
         observers.append(observer)
@@ -54,22 +56,11 @@ class WiiDevice {
     var type: ControllerType = .wiiRemote
     
     func initialize() {
-        // 1. Initialize extension using the "New Way"
-        // Write 0x55 to 0x04A400F0
         writeRegister(address: 0x04A400F0, data: Data([0x55]))
-        // Write 0x00 to 0x04A400FB
         writeRegister(address: 0x04A400FB, data: Data([0x00]))
-        
-        // 2. Set reporting mode to include extension data and accelerometer (0x35)
         setReportingMode(0x35)
-        
-        // 3. Set LED 1
         setLED(1)
-
-        // 4. Request status to get initial battery level and extension status
         requestStatus()
-
-        // 5. Read extension ID
         readRegister(address: 0x04A400FA, length: 6) { [weak self] data in
             self?.identifyExtension(data: data)
         }
@@ -77,17 +68,12 @@ class WiiDevice {
 
     private func identifyExtension(data: Data) {
         guard data.count >= 6 else { return }
-
-        // uDraw ID: FF 00 A4 20 01 12
         if data[0] == 0xFF && data[1] == 0x00 && data[4] == 0x01 && data[5] == 0x12 {
             self.type = .uDraw
-            print("Detected uDraw GameTablet")
         } else if data[4] == 0x00 && data[5] == 0x00 {
             self.type = .nunchuk
-            print("Detected Nunchuk")
         } else if data[4] == 0x01 && data[5] == 0x01 {
-            self.type = .wiiUPro // Or Classic Controller
-            print("Detected Wii U Pro / Classic Controller")
+            self.type = .wiiUPro
         }
     }
 
@@ -111,8 +97,6 @@ class WiiDevice {
 
     func setRumble(_ on: Bool) {
         state.isRumbling = on
-        // Send a Player LED report with the Rumble bit set/unset
-        // We need to keep the current LED state, but for simplicity we'll just send LED 1
         setLED(1)
     }
 
@@ -125,38 +109,30 @@ class WiiDevice {
     private var pendingReadCallbacks: [UInt32: (Data) -> Void] = [:]
 
     private func writeRegister(address: UInt32, data: Data) {
-        var report = Data([0x16]) // Write Register Report
+        var report = Data([0x16])
         let addrBytes = withUnsafeBytes(of: address.bigEndian) { Data($0) }
-        report.append(addrBytes.subdata(in: 1..<4)) // 3-byte address
+        report.append(addrBytes.subdata(in: 1..<4))
         report.append(UInt8(data.count))
         report.append(data)
-        // Pad to 22 bytes total
-        while report.count < 22 {
-            report.append(0x00)
-        }
+        while report.count < 22 { report.append(0x00) }
         connection?.send(data: report)
     }
 
     private func readRegister(address: UInt32, length: UInt8, completion: @escaping (Data) -> Void) {
         pendingReadCallbacks[address & 0xFFFF] = completion
-        var report = Data([0x17]) // Read Register Report
+        var report = Data([0x17])
         let addrBytes = withUnsafeBytes(of: address.bigEndian) { Data($0) }
-        report.append(addrBytes.subdata(in: 1..<4)) // 3-byte address
-
+        report.append(addrBytes.subdata(in: 1..<4))
         let lenHigh = UInt8((length >> 8) & 0xFF)
         let lenLow = UInt8(length & 0xFF)
         report.append(lenHigh)
         report.append(lenLow)
-
         connection?.send(data: report)
     }
     
     func parse(data: Data) {
-        // Bounds checking to prevent buffer overflows
         guard data.count >= 3 else { return }
         let reportId = data[0]
-        
-        // Buttons (Bytes 1 and 2 are same for most reports)
         let b1 = data[1]
         let b2 = data[2]
         
@@ -174,12 +150,10 @@ class WiiDevice {
         state.buttonHome = (b2 & 0x80) != 0
         
         if reportId == 0x20 && data.count >= 7 {
-            // Status report
             let batteryRaw = data[6]
-            state.batteryLevel = Double(batteryRaw) / 200.0 // 0xC8 (200) is max
+            state.batteryLevel = Double(batteryRaw) / 200.0
             state.hasExtension = (data[3] & 0x02) != 0
         } else if reportId == 0x21 && data.count >= 21 {
-            // Read Memory and Registers Response
             let address = (UInt32(data[4]) << 8) | UInt32(data[5])
             let payload = data.subdata(in: 6..<data.count)
             if let callback = pendingReadCallbacks.removeValue(forKey: address) {
@@ -189,39 +163,32 @@ class WiiDevice {
             state.accelX = Double(data[3]) / 255.0
             state.accelY = Double(data[4]) / 255.0
             state.accelZ = Double(data[5]) / 255.0
-
             let ext = data.subdata(in: 6..<min(data.count, 21))
             parseExtension(ext)
         }
         
-        DispatchQueue.main.async {
-            for observer in self.observers {
-                observer(self.state)
-            }
+        virtualController?.update(device: self, state: state)
+        for observer in self.observers {
+            observer(self.state)
         }
     }
 
     private func parseExtension(_ data: Data) {
         guard data.count >= 6 else { return }
         state.hasExtension = true
-
         switch type {
         case .uDraw:
             let xRaw = UInt16(data[0]) | (UInt16(data[2] & 0x0F) << 8)
             let yRaw = UInt16(data[1]) | (UInt16(data[2] & 0xF0) << 4)
             let pRaw = UInt16(data[3]) | (UInt16(data[5] & 0x04) << 6)
-
             state.uDrawX = Double(xRaw) / 4095.0
             state.uDrawY = Double(yRaw) / 4095.0
             state.uDrawPressure = Double(pRaw) / 511.0
-
             state.uDrawButtonLower = (data[5] & 0x02) == 0
             state.uDrawButtonUpper = (data[5] & 0x01) == 0
-
         case .nunchuk:
             state.lStickX = Double(data[0]) / 255.0
             state.lStickY = Double(data[1]) / 255.0
-
         case .wiiUPro, .wiiRemote:
             if data.count >= 10 {
                 state.lStickX = Double(data[0]) / 255.0

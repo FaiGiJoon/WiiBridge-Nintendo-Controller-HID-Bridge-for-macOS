@@ -14,7 +14,8 @@ let package = Package(
         .executableTarget(
             name: "WiiBridge",
             dependencies: [],
-            path: "Sources/WiiBridge"
+            path: "Sources/WiiBridge",
+            exclude: ["Info.plist", "WiiBridge.entitlements"]
         ),
         .testTarget(
             name: "WiiBridgeTests",
