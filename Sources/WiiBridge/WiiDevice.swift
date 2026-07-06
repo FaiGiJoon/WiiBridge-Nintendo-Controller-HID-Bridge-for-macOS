@@ -8,6 +8,16 @@ struct WiiState {
     var buttonMinus = false
     var buttonPlus = false
     var buttonHome = false
+    var buttonX = false
+    var buttonY = false
+    var buttonL = false
+    var buttonR = false
+    var buttonZL = false
+    var buttonZR = false
+    var buttonC = false
+    var buttonZ = false
+    var lThumbClick = false
+    var rThumbClick = false
     var dpadUp = false
     var dpadDown = false
     var dpadLeft = false
@@ -51,6 +61,7 @@ class WiiDevice {
         case wiiRemote
         case wiiUPro
         case nunchuk
+        case classicController
         case uDraw
     }
     var type: ControllerType = .wiiRemote
@@ -73,6 +84,8 @@ class WiiDevice {
         } else if data[4] == 0x00 && data[5] == 0x00 {
             self.type = .nunchuk
         } else if data[4] == 0x01 && data[5] == 0x01 {
+            self.type = .classicController
+        } else if data[4] == 0x01 && data[5] == 0x20 {
             self.type = .wiiUPro
         }
     }
@@ -189,13 +202,70 @@ class WiiDevice {
         case .nunchuk:
             state.lStickX = Double(data[0]) / 255.0
             state.lStickY = Double(data[1]) / 255.0
-        case .wiiUPro, .wiiRemote:
-            if data.count >= 10 {
-                state.lStickX = Double(data[0]) / 255.0
-                state.lStickY = Double(data[1]) / 255.0
-                state.rStickX = Double(data[2]) / 255.0
-                state.rStickY = Double(data[3]) / 255.0
+            state.buttonZ = (data[5] & 0x01) == 0
+            state.buttonC = (data[5] & 0x02) == 0
+        case .classicController:
+            state.lStickX = Double(data[0] & 0x3F) / 63.0
+            state.lStickY = Double(data[1] & 0x3F) / 63.0
+            state.rStickX = Double(((data[0] & 0xC0) >> 3) | ((data[1] & 0xC0) >> 5) | ((data[2] & 0x80) >> 7)) / 31.0
+            state.rStickY = Double(data[2] & 0x1F) / 31.0
+
+            let b1 = data[4]
+            let b2 = data[5]
+
+            state.buttonR = (b1 & 0x02) == 0
+            state.buttonPlus = (b1 & 0x04) == 0
+            state.buttonHome = (b1 & 0x08) == 0
+            state.buttonMinus = (b1 & 0x10) == 0
+            state.buttonL = (b1 & 0x20) == 0
+            state.dpadDown = (b1 & 0x40) == 0
+            state.dpadRight = (b1 & 0x80) == 0
+
+            state.buttonZR = (b2 & 0x02) == 0
+            state.buttonX = (b2 & 0x08) == 0
+            state.buttonA = (b2 & 0x10) == 0
+            state.buttonY = (b2 & 0x20) == 0
+            state.buttonB = (b2 & 0x40) == 0
+            state.buttonZL = (b2 & 0x80) == 0
+        case .wiiUPro:
+            // Wii U Pro has 12-bit sticks and buttons in inverted bits
+            // Format: LX (2 bytes), LY (2 bytes), RX (2 bytes), RY (2 bytes), Buttons (3 bytes)
+            if data.count >= 11 {
+                let lx = UInt16(data[0]) | (UInt16(data[1]) << 8)
+                let ly = UInt16(data[2]) | (UInt16(data[3]) << 8)
+                let rx = UInt16(data[4]) | (UInt16(data[5]) << 8)
+                let ry = UInt16(data[6]) | (UInt16(data[7]) << 8)
+                state.lStickX = Double(lx) / 4095.0
+                state.lStickY = Double(ly) / 4095.0
+                state.rStickX = Double(rx) / 4095.0
+                state.rStickY = Double(ry) / 4095.0
+
+                let b1 = data[8]
+                let b2 = data[9]
+                let b3 = data[10]
+
+                state.buttonR = (b1 & 0x02) == 0
+                state.buttonPlus = (b1 & 0x04) == 0
+                state.buttonHome = (b1 & 0x08) == 0
+                state.buttonMinus = (b1 & 0x10) == 0
+                state.buttonL = (b1 & 0x20) == 0
+                state.dpadDown = (b1 & 0x40) == 0
+                state.dpadRight = (b1 & 0x80) == 0
+
+                state.buttonZR = (b2 & 0x02) == 0
+                state.buttonX = (b2 & 0x08) == 0
+                state.buttonA = (b2 & 0x10) == 0
+                state.buttonY = (b2 & 0x20) == 0
+                state.buttonB = (b2 & 0x40) == 0
+                state.buttonZL = (b2 & 0x80) == 0
+
+                state.lThumbClick = (b3 & 0x02) == 0
+                state.rThumbClick = (b3 & 0x01) == 0
+                state.dpadUp = (b2 & 0x01) == 0
+                state.dpadLeft = (b1 & 0x01) == 0
             }
+        case .wiiRemote:
+            break
         }
     }
 }
